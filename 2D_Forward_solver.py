@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
 import scipy.sparse as sps
 from scipy.sparse.linalg import spsolve
 
@@ -416,7 +416,7 @@ def save_phase_separation_animation(filename="phase_separation.gif", fps=20, see
         return im, time_text
 
     anim = FuncAnimation(fig, update, frames=len(t_hist), blit=True)
-    anim.save(filename, writer=PillowWriter(fps=fps))
+    anim.save("phase_separation.mp4", writer=FFMpegWriter(fps=fps, codec="libx264"),dpi=150)
     plt.close(fig)
 
 if __name__ == '__main__':
