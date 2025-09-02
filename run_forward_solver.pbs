@@ -1,0 +1,13 @@
+#!/bin/bash
+#PBS -N phase_sep
+#PBS -q teachingq
+#PBS -l select=1:ncpus=16:mpiprocs=16:mem=2GB
+#PBS -l walltime=00:30:00
+#PBS -o log.out
+#PBS -e log.err
+
+module load python
+module load mpi
+
+cd $PBS_O_WORKDIR
+mpirun -np 16 python forward_solver_mpi.py
