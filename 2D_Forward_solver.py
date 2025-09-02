@@ -106,19 +106,16 @@ def assemble_jacobian(phi_new, dt, tau, c1, L):
     t = tau / dt
     s = 1.0 / dt
 
-    # K_phi_phi
     Kpp = (-0.5 * kappa) * L.tocsr()
     phi_sq = phi_new ** 2
-    diag_add = t + 2.0 * c1 / (1.0 - phi_sq)  # |phi|<1 enforced elsewhere
+    diag_add = t + 2.0 * c1 / (1.0 - phi_sq)
     Kpp = Kpp + sps.diags(diag_add, format="csr")
 
-    # K_phi_mu, K_mu_phi, K_mu_mu
     I = sps.eye(Nloc, format="csr")
     Kpm = -0.5 * I
     Kmp = s * I
     Kmm = -0.5 * L.tocsr()
 
-    # Block assembly
     J = sps.bmat([[Kpp, Kpm], [Kmp, Kmm]], format="csr")
     return J
 
