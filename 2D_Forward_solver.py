@@ -107,19 +107,16 @@ def assemble_jacobian(phi_new, dt, tau, c1, L):
     t = tau / dt
     s = 1.0 / dt
 
-    # K_phi_phi
     Kpp = (-0.5 * kappa) * L.tocsr()
     phi_sq = phi_new ** 2
-    diag_add = t + 2.0 * c1 / (1.0 - phi_sq)  # |phi|<1 enforced elsewhere
+    diag_add = t + 2.0 * c1 / (1.0 - phi_sq)
     Kpp = Kpp + sps.diags(diag_add, format="csr")
 
-    # K_phi_mu, K_mu_phi, K_mu_mu
     I = sps.eye(Nloc, format="csr")
     Kpm = -0.5 * I
     Kmp = s * I
     Kmm = -0.5 * L.tocsr()
 
-    # Block assembly
     J = sps.bmat([[Kpp, Kpm], [Kmp, Kmm]], format="csr")
     return J
 
@@ -266,13 +263,13 @@ def source_u(t, x, y):
 
     return np.zeros((x.size, y.size))
 
-def run_main_simulation(store_history=False, control_input=None, verbose=True):
+def run_main_simulation(store_history=False, control_input=None, verbose=True, seed=42):
 
 
     x = np.linspace(0, Lx, Nx + 1)
     y = np.linspace(0, Ly, Ny + 1)
     # initial phi inside (-1,1)
-    phi = init_phi_random(Nx, Ny, delta_sep, amp=0.01, seed=42, enforce_zero_mean=True).reshape(-1)
+    phi = init_phi_random(Nx, Ny, delta_sep, amp=0.01, seed=seed, enforce_zero_mean=True).reshape(-1)
 
     w = np.zeros_like(phi)
 
@@ -391,10 +388,21 @@ def run_main_simulation(store_history=False, control_input=None, verbose=True):
         return None
 
 
-def save_phase_separation_animation(filename="phase_separation.gif", fps=20):
-    """Run the simulation, create an animation, and save it to ``filename``."""
+def save_phase_separation_animation(filename="phase_separation.gif", fps=20, seed=42):
+    """Run the simulation, create an animation, and save it to ``filename``.
 
-    history, (x, y), t_hist = run_main_simulation(store_history=True, verbose=False)
+    Parameters
+    ----------
+    filename : str
+        Output GIF file name.
+    fps : int
+        Frames per second in the saved animation.
+    seed : int
+        Random seed for the initial condition; different seeds produce
+        distinct phase-separation patterns.
+    """
+
+    history, (x, y), t_hist = run_main_simulation(store_history=True, verbose=False, seed=seed)
 
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(history[0], origin="lower", extent=[0, Lx, 0, Ly], vmin=-1, vmax=1)
