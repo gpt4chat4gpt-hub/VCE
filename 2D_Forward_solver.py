@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.sparse as sps
+from scipy.sparse.linalg import spsolve
 
 # === PARAMETERS ===
 # grid resolution
@@ -47,28 +49,23 @@ def regularized_log(phi, eps=None):
     return np.log((1 + phi_s)/(1 - phi_s))
 
 def laplacian_matrix_neumann_1d(N, h):
-
+    """Sparse 1D Laplacian with Neumann boundary conditions."""
     a = 1.0 / (h * h)
-    L = np.zeros((N + 1, N + 1))
-    # Build using vectorization
-    diag_indices = np.arange(1, N)
-    L[diag_indices, diag_indices - 1] = a
-    L[diag_indices, diag_indices] = -2 * a
-    L[diag_indices, diag_indices + 1] = a
-    # boundaries: (Lv)_0 = 2/h^2 (v_1 - v_0), (Lv)_N = 2/h^2 (v_{N-1} - v_N)
-    L[0, 0], L[0, 1] = -2 * a, 2 * a
-    L[N, N - 1], L[N, N] = 2 * a, -2 * a
-    return L
+    main = -2 * a * np.ones(N + 1)
+    off = a * np.ones(N)
+    L = sps.diags([off, main, off], offsets=[-1, 0, 1], shape=(N + 1, N + 1), format="lil")
+    L[0, 1] = 2 * a
+    L[N, N - 1] = 2 * a
+    return L.tocsr()
 
 
 def laplacian_matrix_neumann(Nx, Ny, hx, hy):
-    """Return the 2D Neumann Laplacian using Kronecker products."""
-
+    """Return the 2D Neumann Laplacian using sparse Kronecker products."""
     Lx = laplacian_matrix_neumann_1d(Nx, hx)
     Ly = laplacian_matrix_neumann_1d(Ny, hy)
-    Ix = np.eye(Nx + 1)
-    Iy = np.eye(Ny + 1)
-    return np.kron(Iy, Lx) + np.kron(Ly, Ix)
+    Ix = sps.eye(Nx + 1, format="csr")
+    Iy = sps.eye(Ny + 1, format="csr")
+    return sps.kron(Iy, Lx) + sps.kron(Ly, Ix)
 
 def apply_laplacian(L, v):
    
@@ -104,31 +101,22 @@ def solve_phi_residual(phi_new, phi_old, mu_new, mu_old, w_new, w_old, dt, tau, 
     return (tau*(phi_new - phi_old)/dt) - 0.5 * kappa * (lap_new + lap_old) + (f_cvx + f_ccv) - mu_avg - w_avg
 
 def assemble_jacobian(phi_new, dt, tau, c1, L):
-
+    """Assemble sparse Jacobian for the coupled (phi, mu) system."""
     Nloc = phi_new.size
-    size = 2 * Nloc
-    J = np.zeros((size, size))
     t = tau / dt
     s = 1.0 / dt
 
-    # K_phi_phi
-    Kpp = -0.5 * kappa * L.copy()
-    # Vectorized diagonal computation
+    Kpp = (-0.5 * kappa) * L.tocsr()
     phi_sq = phi_new ** 2
-    Diag = 2.0 * c1 / (1.0 - phi_sq)  # safe since line search enforces |phi|<1
-    np.fill_diagonal(Kpp, np.diag(Kpp) + t + Diag)
+    diag_add = t + 2.0 * c1 / (1.0 - phi_sq)
+    Kpp = Kpp + sps.diags(diag_add, format="csr")
 
-    # K_phi_mu, K_mu_phi, K_mu_mu
-    I = np.eye(Nloc)
+    I = sps.eye(Nloc, format="csr")
     Kpm = -0.5 * I
     Kmp = s * I
-    Kmm = -0.5 * L
+    Kmm = -0.5 * L.tocsr()
 
-    # pack using slicing
-    J[:Nloc, :Nloc] = Kpp
-    J[:Nloc, Nloc:] = Kpm
-    J[Nloc:, :Nloc] = Kmp
-    J[Nloc:, Nloc:] = Kmm
+    J = sps.bmat([[Kpp, Kpm], [Kmp, Kmm]], format="csr")
     return J
 
 def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L):
@@ -168,9 +156,9 @@ def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L)
 
         # Solve for Newton step with regularization if needed
         try:
-            delta = np.linalg.solve(J, -R)
-        except np.linalg.LinAlgError:
-            delta = np.linalg.solve(J + 1e-10 * np.eye(J.shape[0]), -R)
+            delta = spsolve(J, -R)
+        except Exception:
+            delta = spsolve(J + 1e-10 * sps.eye(J.shape[0], format="csr"), -R)
 
         dphi = delta[:Nloc]
         dmu = delta[Nloc:]
