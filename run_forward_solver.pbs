@@ -1,0 +1,11 @@
+#!/bin/bash
+#PBS -N forward_solver
+#PBS -l select=1:ncpus=4:mpiprocs=4
+#PBS -l walltime=00:10:00
+#PBS -j oe
+
+module load mpi
+module load petsc
+
+cd $PBS_O_WORKDIR
+mpiexec -n 4 python forward_solver_mpi.py
