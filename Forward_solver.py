@@ -2,16 +2,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # === PARAMETERS ===
-N = 64                 # Number of intervals (=> N+1 nodes)
-Lx = 1.0                 # Domain length
-h  = Lx / N              # Spatial step size (N intervals)
-dt_initial = 1e-4      # Initial time step size
+# Grid resolution in each spatial direction
+Nx = 64                  # Number of intervals along x  (=> Nx+1 nodes)
+Ny = 64                  # Number of intervals along y  (=> Ny+1 nodes)
+
+# Domain lengths (square domain by default)
+Lx = 1.0
+Ly = 1.0
+
+# Spatial step sizes (assume uniform grid)
+hx = Lx / Nx
+hy = Ly / Ny
+
+dt_initial = 1e-4        # Initial time step size
 T = 1.0                  # Total simulation time
-tau = 0.01            # Relaxation parameter for phi-equation keep it .01
+tau = 0.01               # Relaxation parameter for phi-equation keep it .01
 gamma = 10.0             # Relaxation parameter for w-equation
 c1 = 0.5                 # Flory–Huggins convex coefficient
-c2 = 1.0            # Concave (quadratic) coefficient  as 1 
-kappa = 0.03**2  # gradient-energy coefficient ~ (interface thickness)^2
+c2 = 1.0                 # Concave (quadratic) coefficient  as 1
+kappa = 0.03**2          # gradient-energy coefficient ~ (interface thickness)^2
 
 # Derived parameters (optional)
 theta   = 2 * c1
@@ -40,19 +49,25 @@ def regularized_log(phi, eps=None):
     phi_s = np.clip(phi, -1+eps, 1-eps)
     return np.log((1 + phi_s)/(1 - phi_s))
 
-def laplacian_matrix_neumann(N, h):
-   
+def laplacian_matrix_neumann_1d(N, h):
+    """1-D Laplacian with Neumann boundary conditions."""
     a = 1.0 / (h*h)
     L = np.zeros((N+1, N+1))
-    # Build using vectorization
     diag_indices = np.arange(1, N)
     L[diag_indices, diag_indices-1] = a
     L[diag_indices, diag_indices] = -2*a
     L[diag_indices, diag_indices+1] = a
-    # boundaries: (Lv)_0 = 2/h^2 (v_1 - v_0), (Lv)_N = 2/h^2 (v_{N-1} - v_N)
     L[0, 0], L[0, 1]   = -2*a,  2*a
     L[N, N-1], L[N, N] =  2*a, -2*a
     return L
+
+def laplacian_matrix_neumann(Nx, Ny, hx, hy):
+    """2-D Laplacian with Neumann boundary conditions using Kronecker products."""
+    Lx_mat = laplacian_matrix_neumann_1d(Nx, hx)
+    Ly_mat = laplacian_matrix_neumann_1d(Ny, hy)
+    Ix = np.eye(Nx + 1)
+    Iy = np.eye(Ny + 1)
+    return np.kron(Iy, Lx_mat) + np.kron(Ly_mat, Ix)
 
 def apply_laplacian(L, v):
    
@@ -88,46 +103,39 @@ def solve_phi_residual(phi_new, phi_old, mu_new, mu_old, w_new, w_old, dt, tau, 
     return (tau*(phi_new - phi_old)/dt) - 0.5 * kappa * (lap_new + lap_old) + (f_cvx + f_ccv) - mu_avg - w_avg
 
 def assemble_jacobian(phi_new, dt, tau, c1, L):
-  
-    Nloc = len(phi_new) - 1
-    size = 2*(Nloc+1)
+    """Assemble the 2x2 block Jacobian for the Newton step."""
+    n = phi_new.size
+    size = 2 * n
     J = np.zeros((size, size))
-    t = tau/dt
-    s = 1.0/dt
+    t = tau / dt
+    s = 1.0 / dt
 
     # K_phi_phi
     Kpp = -0.5 * kappa * L.copy()
-    # Vectorized diagonal computation
     phi_sq = phi_new**2
-    Diag = 2.0*c1 / (1.0 - phi_sq)      # safe since line search enforces |phi|<1
+    Diag = 2.0 * c1 / (1.0 - phi_sq)  # safe since line search enforces |phi|<1
     np.fill_diagonal(Kpp, np.diag(Kpp) + t + Diag)
 
     # K_phi_mu, K_mu_phi, K_mu_mu
-    I = np.eye(Nloc+1)
+    I = np.eye(n)
     Kpm = -0.5 * I
-    Kmp =  s   * I
+    Kmp = s * I
     Kmm = -0.5 * L
 
-    # pack using slicing
-    J[:Nloc+1, :Nloc+1]       = Kpp
-    J[:Nloc+1, Nloc+1:]       = Kpm
-    J[Nloc+1:, :Nloc+1]       = Kmp
-    J[Nloc+1:, Nloc+1:]       = Kmm
+    # Pack using slicing
+    J[:n, :n] = Kpp
+    J[:n, n:] = Kpm
+    J[n:, :n] = Kmp
+    J[n:, n:] = Kmm
     return J
 
 def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L):
  
     phi_new = phi_old.copy()
-    mu_new  = mu_old.copy()
+    mu_new = mu_old.copy()
     tol = 1e-6
     max_iter = 50
-    Nloc = len(phi_old) - 1
-
-    # trapezoidal weights for conservation check (w^T L = 0)
-    wts = np.ones(Nloc + 1)
-    wts[0]  = 0.5
-    wts[-1] = 0.5
-    wts_h = h * wts  # Precompute weighted factor
+    n = phi_old.size
 
     for k in range(max_iter):
         # Residuals (compute once per iteration)
@@ -136,13 +144,12 @@ def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L)
         R = np.concatenate([res_phi, res_mu])
         norm_R = np.linalg.norm(R)
 
-        if DEBUG and k % 10 == 0:  # Reduce frequency of debug checks
-            # weighted mass balance (discrete integral with trapz weights)
-            mass_defect = np.dot(wts_h, res_mu)
+        if DEBUG and k % 10 == 0:
+            mass_defect = np.sum(res_mu)
             if not np.isfinite(mass_defect):
-              raise RuntimeError("Non-finite mass_defect; check φ bounds/log regularization.")
+                raise RuntimeError("Non-finite mass_defect; check φ bounds/log regularization.")
             if abs(mass_defect) > 1e-12:
-                print(f"[warn] weighted mass defect = {mass_defect:.3e}")
+                print(f"[warn] mass defect = {mass_defect:.3e}")
 
         if norm_R < tol:
             return phi_new, mu_new  # converged
@@ -156,8 +163,8 @@ def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L)
         except np.linalg.LinAlgError:
             delta = np.linalg.solve(J + 1e-10*np.eye(J.shape[0]), -R)
 
-        dphi = delta[:Nloc+1]
-        dmu  = delta[Nloc+1:]
+        dphi = delta[:n]
+        dmu = delta[n:]
 
         # Step ceiling to keep φ in (-1+delta_sep, 1-delta_sep)
         # Vectorized computation
@@ -201,172 +208,135 @@ def newton_raphson(phi_old, mu_old, w_old, w_new, dt, tau, c1, c2, delta_sep, L)
     # Not converged within max_iter: return last iterate
     return phi_new, mu_new
 
-def trapz_weights(n_nodes: int) -> np.ndarray:
-    w = np.ones(n_nodes)
-    w[0] = 0.5
-    w[-1] = 0.5
-    return w
-
-def free_energy(phi, kappa, c1, c2, h, w=None, eps=None):
-    
-    wts = trapz_weights(len(phi))
-    # gradient part: ∫ (kappa/2) |phi_x|^2 dx  ≈  (kappa/(2h)) Σ (Δphi)^2
-    dphi = np.diff(phi)  # More efficient than phi[1:] - phi[:-1]
-    E_grad = (kappa/(2.0*h)) * np.sum(dphi**2)
-
-    # bulk part: ψ(φ) with safe logs
-    if eps is None: 
+def free_energy(phi, kappa, c1, c2, hx, hy, w=None, eps=None):
+    """Compute a simple discrete free energy on a 2-D grid."""
+    if eps is None:
         eps = 1e-8
-    phi_s = np.clip(phi, -1+eps, 1-eps)
+
+    # Gradient part using forward differences
+    dphix = np.diff(phi, axis=0)
+    dphiy = np.diff(phi, axis=1)
+    E_grad = (kappa/2.0) * (
+        np.sum(dphix**2) / hx + np.sum(dphiy**2) / hy
+    ) * hx * hy
+
+    # Bulk part
+    phi_s = np.clip(phi, -1 + eps, 1 - eps)
     psi = c1*((1+phi_s)*np.log(1+phi_s) + (1-phi_s)*np.log(1-phi_s)) - c2*(phi_s**2)
-    E_bulk = h * np.dot(wts, psi)
+    E_bulk = hx * hy * np.sum(psi)
 
     E = E_grad + E_bulk
 
-    # optional external coupling: -∫ w φ dx
     if w is not None:
-        E -= h * np.dot(wts, w*phi)
+        E -= hx * hy * np.sum(w * phi)
     return E
 
-def init_phi_random(N, delta_sep, amp=0.01, seed=42, enforce_zero_mean=True):
-   
+def init_phi_random(Nx, Ny, delta_sep, amp=0.01, seed=42, enforce_zero_mean=True):
     rng = np.random.default_rng(seed)
-    phi0 = amp * rng.standard_normal(N + 1)
-
-    # optional: enforce trapezoidal zero mean (mass-neutral start)
+    phi0 = amp * rng.standard_normal((Nx + 1, Ny + 1))
     if enforce_zero_mean:
-        wts = trapz_weights(N + 1)
-        m = np.dot(wts, phi0) / wts.sum()
-        phi0 -= m
-
-    # safety: stay within the log domain
+        phi0 -= np.mean(phi0)
     phi0 = np.clip(phi0, -1 + delta_sep, 1 - delta_sep)
     return phi0
 
 
-def source_u(t, x):
-   
-    return np.zeros_like(x)
+def source_u(t, x, y):
+    return np.zeros((Nx + 1, Ny + 1))
 
-def run_main_simulation(store_history = False, control_input=None, verbose=True):
-  
-    
-    x = np.linspace(0, Lx, N + 1)
+def run_main_simulation(store_history=False, control_input=None, verbose=True):
+    x = np.linspace(0, Lx, Nx + 1)
+    y = np.linspace(0, Ly, Ny + 1)
+
     # initial phi inside (-1,1)
-    phi = init_phi_random(N, delta_sep, amp=0.01, seed=42, enforce_zero_mean=True)
+    phi = init_phi_random(Nx, Ny, delta_sep, amp=0.01, seed=42, enforce_zero_mean=True).reshape(-1)
 
-    w   = np.zeros(N + 1)
-    
+    w = np.zeros_like(phi)
+
     # precompute Neumann Laplacian ONCE
-    Lmat = laplacian_matrix_neumann(N, h)
-    
-    mu  = initialize_mu(phi, w, c1, c2, Lmat)     # Use precomputed L
+    Lmat = laplacian_matrix_neumann(Nx, Ny, hx, hy)
+
+    mu = initialize_mu(phi, w, c1, c2, Lmat)  # Use precomputed L
 
     current_time = 0.0
     step = 0
 
     # Pre-allocate history arrays if requested
     if store_history:
-        # compute the expected number of time levels. We take ceiling to be safe
         M_steps = int(np.ceil(T / dt))
-        phi_hist = np.empty((M_steps + 1, N + 1), dtype=np.float64)
+        phi_hist = np.empty((M_steps + 1, Nx + 1, Ny + 1), dtype=np.float64)
         t_hist = np.empty(M_steps + 1, dtype=np.float64)
-        # record initial state
-        phi_hist[0] = phi.copy()
+        phi_hist[0] = phi.reshape(Nx + 1, Ny + 1)
         t_hist[0] = current_time
-        # index to store next state
         n_store = 0
-    
-    # Precompute source function if it's constant
-    zero_source = np.zeros(N + 1)
-    
-    # Use tolerance to avoid floating-point issues at final time
+
+    zero_source = np.zeros_like(phi)
     time_tol = 1e-10
-    
+
     while current_time < T - time_tol:
         dt_step = min(dt, T - current_time)
-        
-        # Ensure we don't overshoot due to floating-point arithmetic
         if current_time + dt_step > T:
             dt_step = T - current_time
 
-    
-        # w^{n+1}
         if control_input is not None:
-            # Use the provided control history at the current and next time step
-            # control_input shape is (M+1, N+1), extract spatial values at time step
             if step < control_input.shape[0] - 1:
-                u_n = control_input[step, :]
-                u_np1 = control_input[step + 1, :]
+                u_n = control_input[step].reshape(-1)
+                u_np1 = control_input[step + 1].reshape(-1)
             else:
-                # At the last step, use the last control value for both
-                u_n = control_input[step, :]
-                u_np1 = control_input[step, :]
+                u_n = control_input[step].reshape(-1)
+                u_np1 = control_input[step].reshape(-1)
         else:
-            # If no control is provided, fall back to zero
             u_n = zero_source
             u_np1 = zero_source
         w_new = solve_w(w, dt_step, gamma, u_n, u_np1)
-                
-        # Only compute energy when needed
-        if COMPUTE_ENERGY and (step % 100 == 0):
-            E_prev = free_energy(phi, kappa, c1, c2, h, w=None)
-        
-        # Newton solve for (phi^{n+1}, mu^{n+1})
-        phi_new, mu_new = newton_raphson(phi, mu, w, w_new, dt_step, tau, c1, c2, delta_sep, Lmat)
-        
-        if COMPUTE_ENERGY and (step % 100 == 0):
-            E_now  = free_energy(phi_new, kappa, c1, c2, h, w=None)
-            print(f"ΔE = {E_now - E_prev:.3e}")   # should be <= 0 (up to tiny roundoff)
-        
-        # accept & clamp very lightly for safety
-        phi = np.clip(phi_new, -1+delta_sep, 1-delta_sep)
-        mu  = mu_new
-        w   = w_new
 
-        # update bookkeeping
+        if COMPUTE_ENERGY and (step % 100 == 0):
+            E_prev = free_energy(phi.reshape(Nx + 1, Ny + 1), kappa, c1, c2, hx, hy, w=None)
+
+        phi_new, mu_new = newton_raphson(phi, mu, w, w_new, dt_step, tau, c1, c2, delta_sep, Lmat)
+
+        if COMPUTE_ENERGY and (step % 100 == 0):
+            E_now = free_energy(phi_new.reshape(Nx + 1, Ny + 1), kappa, c1, c2, hx, hy, w=None)
+            print(f"ΔE = {E_now - E_prev:.3e}")
+
+        phi = np.clip(phi_new, -1 + delta_sep, 1 - delta_sep)
+        mu = mu_new
+        w = w_new
+
         current_time += dt_step
         step += 1
 
-        # store the updated state if requested
         if store_history:
             n_store += 1
-            # ensure we don't exceed preallocated array
             if n_store < phi_hist.shape[0]:
-                phi_hist[n_store] = phi
-                # Ensure final time is exactly T, not T + small epsilon
+                phi_hist[n_store] = phi.reshape(Nx + 1, Ny + 1)
                 t_hist[n_store] = min(current_time, T)
             else:
-               
-                phi_hist = np.vstack([phi_hist, phi[None, :]])
+                phi_hist = np.vstack([phi_hist, phi.reshape(1, Nx + 1, Ny + 1)])
                 t_hist = np.append(t_hist, min(current_time, T))
                 n_store += 1
 
         if verbose and (step % 100 == 0 or current_time >= T):
             print(f"Step {step:5d} | t={current_time:.4e} | ||phi||_inf={np.max(np.abs(phi)):.5f}")
 
-        # optional per-step checks (only when debugging)
-        if DEBUG and step % 500 == 0:  # Reduce frequency
-            mass = np.sum(phi)  # Simple mass check
+        if DEBUG and step % 500 == 0:
+            mass = np.sum(phi)
             if not np.isfinite(mass):
                 print("[warn] non-finite mass at step", step)
 
     if verbose:
         print("Simulation complete.")
 
-    # plot final state (only when not storing history)
     if not store_history:
-        plt.figure(figsize=(10, 6))
-        plt.plot(x, phi, label=f'Final state at t={T}')
-        plt.title("Final Profile of φ")
+        plt.figure(figsize=(6, 5))
+        plt.imshow(phi.reshape(Nx + 1, Ny + 1), origin='lower', extent=(0, Lx, 0, Ly))
+        plt.title(f"Final state at t={T}")
         plt.xlabel("x")
-        plt.ylabel("φ(x, T)")
-        plt.grid(True)
-        plt.legend()
+        plt.ylabel("y")
+        plt.colorbar(label="φ(x,y,T)")
         plt.show()
 
     if store_history:
-        return phi_hist[:n_store+1].copy(), x, t_hist[:n_store+1].copy()
+        return phi_hist[:n_store + 1].copy(), x, y, t_hist[:n_store + 1].copy()
     else:
         return None
 

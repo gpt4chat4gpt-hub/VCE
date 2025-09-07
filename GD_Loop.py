@@ -2,7 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from Forward_solver import run_main_simulation, Lx, T
+from Forward_solver import run_main_simulation, Lx, Ly, T
 from backward_solver import run_backward
 from cost_and_function import calculate_cost, calculate_gradient, perform_gradient_step
 
@@ -92,7 +92,7 @@ if __name__ == '__main__':
     
     # --- Initialize ---
     print("Initializing... (this may take a moment)")
-    phi_init, x, t_hist = run_main_simulation(store_history=True, control_input=None, verbose=False)
+    phi_init, x, y, t_hist = run_main_simulation(store_history=True, control_input=None, verbose=False)
     
     # Initialize control (keeping original approach)
     u_k = np.zeros_like(phi_init)
@@ -109,7 +109,7 @@ if __name__ == '__main__':
     # = np.ones_like(x) * 0.3
     # Creates a target with a sinusoidal pattern
     #phi_T_target = 0.8 * np.sin(2 * np.pi * x / Lx)
-    phi_T_target = np.zeros_like(x)
+    phi_T_target = np.zeros((x.size, y.size))
    # mid = len(phi_T_target) // 2
     #phi_T_target[:mid] = 0.2    # Mild phase separation target
     #phi_T_target[mid:] = -0.2
@@ -126,12 +126,12 @@ if __name__ == '__main__':
             print(f"\n--- Iteration {k+1}/{MAX_ITER} ---")
         
         # 1. Forward Pass
-        phi_k, _, _ = run_main_simulation(store_history=True, control_input=u_k, verbose=False)
+        phi_k, _, _, _ = run_main_simulation(store_history=True, control_input=u_k, verbose=False)
         
         # 2. Cost Calculation
         cost_k = calculate_cost(
             phi_k, u_k, phi_Q_target, phi_T_target,
-            x, t_hist, b1, b2, b3, kappa
+            x, y, t_hist, b1, b2, b3, kappa
         )
         cost_history.append(cost_k)
         
@@ -140,7 +140,7 @@ if __name__ == '__main__':
         
         # 3. Backward Pass
         _, _, r_k = run_backward(
-            phi_k, x, t_hist, b1, b2, phi_Q_target, phi_T_target
+            phi_k, x, y, t_hist, b1, b2, phi_Q_target, phi_T_target
         )
         
         # 4. Gradient Calculation
